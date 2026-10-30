@@ -13,3 +13,7 @@ dependencies:
   - farm:farm_season
   - farm:farm_timeline
   - farm:plan
+
+  - farm:farm_harvest
+  - farm:farm_quantity_standard
+  - farm:farm_quick
