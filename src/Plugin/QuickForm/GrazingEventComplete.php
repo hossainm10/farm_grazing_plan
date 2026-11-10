@@ -25,6 +25,7 @@ use Symfony\Component\HttpFoundation\RequestStack;
     'update any activity log',
   ],
 )]
+
 class GrazingEventComplete extends QuickFormBase {
 
   public function __construct(
@@ -60,8 +61,48 @@ class GrazingEventComplete extends QuickFormBase {
       '#options' => $options,
       '#default_value' => $default,
       '#required' => TRUE,
-    ];
+      ];
+    // Actual start date (log timestamp).
+    $form['timestamp'] = [
+      '#type' => 'datetime',
+      '#title' => $this->t('Actual start date'),
+      '#default_value' => new DrupalDateTime('now', $this->currentUser->getTimeZone()),
+      '#required' => TRUE,
+      ];
 
+    // Heights.
+    $form['heights'] = $this->buildInlineContainer();
+    $form['heights']['graze_height'] = [
+      '#type' => 'number', '#title' => $this->t('Graze height (in)'),
+      '#min' => 0, '#step' => 0.1,
+      ];
+    $form['heights']['residual_height'] = [
+      '#type' => 'number', '#title' => $this->t('Residual height (in)'),
+      '#min' => 0, '#step' => 0.1,
+      ];
+
+    // Geometry.
+    $form['geometry'] = [
+      '#type' => 'farm_map_input',
+      '#title' => $this->t('Geometry'),
+      '#description' => $this->t('Optionally draw a more specific area within the paddock.'),
+      '#display_raw_geometry' => TRUE,
+      ];
+
+    // Photos.
+    $form['images'] = [
+      '#type' => 'managed_file',
+      '#title' => $this->t('Photos'),
+      '#multiple' => TRUE,
+      '#upload_location' => 'private://farm/log/' . date('Y-m'),
+      '#upload_validators' => ['FileExtension' => ['extensions' => 'png gif jpg jpeg']],
+      ];
+
+    // Notes.
+    $form['notes'] = [
+      '#type' => 'textarea',
+      '#title' => $this->t('Notes'),
+      ];
     return $form;
   }
 
@@ -74,7 +115,7 @@ class GrazingEventComplete extends QuickFormBase {
    *   Returns the option labels, keyed by grazing event ID.
    */
   protected function getGrazingEventOptions(): array {
-    $options = [];
+      $options = [];
 
     // Load all grazing plans with a status of "active".
     /** @var \Drupal\plan\Entity\PlanInterface[] $plans */
@@ -173,5 +214,6 @@ class GrazingEventComplete extends QuickFormBase {
     // Redirect to the plan.
     $form_state->setRedirect('entity.plan.canonical', ['plan' => $plan->id()]);
   }
+
 
 }

@@ -73,6 +73,6 @@ class Harvest extends QuickFormBase{
       'status' => 'done',
     ];
     // Create the log.
-    $this.createLog($log);
+    $this->createLog($log);
   }
 }
