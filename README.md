@@ -2,6 +2,8 @@
 
 Provides features for grazing planning in [farmOS](https://farmOS.org).
 
+#branch - emmma
+
 ## Maintainers
 
 Current maintainers:
