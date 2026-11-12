@@ -12,6 +12,8 @@ use Drupal\farm_grazing_plan\GrazingPlanInterface;
 use Drupal\farm_quick\Attribute\QuickForm;
 use Drupal\farm_quick\Plugin\QuickForm\QuickFormBase;
 use Symfony\Component\HttpFoundation\RequestStack;
+use Drupal\Core\Datetime\DrupalDateTime;
+use Drupal\farm_quick\Traits\QuickFormElementsTrait;
 
 /**
  * Complete grazing event quick form.
@@ -27,7 +29,7 @@ use Symfony\Component\HttpFoundation\RequestStack;
 )]
 
 class GrazingEventComplete extends QuickFormBase {
-
+  use QuickFormElementsTrait;
   public function __construct(
     array $configuration,
     $plugin_id,
