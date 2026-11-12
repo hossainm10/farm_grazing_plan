@@ -1,6 +1,5 @@
 # farmOS Grazing Plan
 
-#Hossain's test
 
 Provides features for grazing planning in [farmOS](https://farmOS.org).
 
