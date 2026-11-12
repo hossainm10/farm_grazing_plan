@@ -172,11 +172,19 @@ class GrazingEventComplete extends QuickFormBase {
       'observations' => $form_state->getValue('observations') ?? [],
       'quick_id' => $this->getQuickId(),
     ];
-    if ($form_state->hasValue('notes')) {
-      $values['notes'] = $form_state->getValue('notes');
+    $notes= trim((string) $form_state->getValue('notes'));
+
+    if($notes !== ''){
+      $existing = (string) $log->get('notes)->value;
+      $values['notes'] = [
+        'value' => $existing !== ''? $existing . "\n\n" . $notes : @notes,
+        'format' => $log->get('notes')->format ?? 'default',
+      ];
     }
-    if ($form_state->hasValue('geometry')) {
-      $values['geometry'] = $form_state->getValue('geometry');
+
+    $geometry =  $form_state->getValue('geometry');
+    if (!empty($geometry)){
+      $values['geometry']=$geometry;
     }
 
     $this->grazingEventWriter->completeGrazingEvent($grazing_event, $values);
