@@ -1,6 +1,0 @@
-services:
-  _defaults:
-    autowire: true
-  farm_grazing_plan:
-    class: Drupal\farm_grazing_plan\GrazingPlan
-  Drupal\farm_grazing_plan\GrazingPlanInterface: '@farm_grazing_plan'
