@@ -14,3 +14,7 @@ dependencies:
   - farm:farm_timeline
   - farm:plan
   - farm:farm_quantity_standard
+  - farm:farm_season
+  - farm:farm_timeline
+  - farm:farm_unit
+  - farm:plan

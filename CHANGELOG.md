@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [Unreleased]
+
+### Added
+
+- Add actual start date, graze height, residual height, geometry, photo, and
+  notes fields to the "Complete grazing event" quick form. The date, notes,
+  and geometry are saved on the event's movement log. Heights and photos are
+  saved on observation logs for the paddocks the animals entered and left.
+
+### Changed
+
+- The module now depends on `farm_observation`, `farm_quantity_standard`, and `farm_unit`.
 
 ## [Unreleased]
 
