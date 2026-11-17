@@ -9,9 +9,9 @@ use Drupal\Core\Datetime\DateFormatterInterface;
 use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
-use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\Core\Url;
 use Drupal\asset\Entity\AssetInterface;
 use Drupal\farm_grazing_plan\Bundle\GrazingEventInterface;
 use Drupal\farm_grazing_plan\GrazingPlanInterface;
@@ -29,8 +29,9 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * and geometry on its movement log. Graze height and attachments (photos and
  * documents, saved in the farm_attachments field) are recorded on an
  * observation log for the paddock the animals entered, and residual height on
- * an observation log for the paddock they left. The form also lists each
- * user's most recently completed grazing events.
+ * an observation log for the paddock they left. The form also shows
+ * notifications: pending grazing events that are past their planned start
+ * (overdue), and the most recently completed grazing events.
  */
 #[QuickForm(
   id: 'grazing_event_complete',
@@ -63,14 +64,9 @@ class GrazingEventComplete extends QuickFormBase {
   public const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
   /**
-   * The key/value collection that recent completions are stored in.
+   * How many recently completed grazing events to show.
    */
-  public const NOTIFICATIONS_COLLECTION = 'farm_grazing_plan_notifications';
-
-  /**
-   * How many recent completions to keep per user.
-   */
-  public const NOTIFICATIONS_LIMIT = 10;
+  public const COMPLETED_LIMIT = 10;
 
   public function __construct(
     array $configuration,
@@ -81,7 +77,6 @@ class GrazingEventComplete extends QuickFormBase {
     protected GrazingPlanInterface $grazingPlan,
     protected RequestStack $requestStack,
     protected AssetLocationInterface $assetLocation,
-    protected KeyValueFactoryInterface $keyValueFactory,
     protected DateFormatterInterface $dateFormatter,
     protected TimeInterface $time,
   ) {
@@ -93,16 +88,18 @@ class GrazingEventComplete extends QuickFormBase {
    */
   public function buildForm(array $form, FormStateInterface $form_state) {
 
-    // Get the options for the grazing event select element.
-    $options = $this->getGrazingEventOptions();
+    // Get the grazing events the user can see, and the options for the
+    // grazing event select element.
+    $event_lists = $this->getGrazingEventLists();
+    $options = $this->getGrazingEventOptions($event_lists);
 
     // If a grazing event is specified in the query string, preselect it, as
     // long as it is one of the available options.
     $grazing_event_id = (int) $this->requestStack->getCurrentRequest()->query->get('grazing_event');
     $default = array_key_exists($grazing_event_id, $options) ? $grazing_event_id : NULL;
 
-    // Show the current user's recently completed grazing events.
-    $form['notifications'] = $this->buildNotifications();
+    // Show overdue and recently completed grazing events.
+    $form['notifications'] = $this->buildNotifications($event_lists, $options);
 
     // Select the grazing event to complete.
     $form['grazing_event'] = [
@@ -198,15 +195,17 @@ class GrazingEventComplete extends QuickFormBase {
   }
 
   /**
-   * Get the options for the grazing event select element.
+   * Get the grazing events the user can see, one ordered list per asset.
    *
-   * The options are keyed by the grazing event ID.
+   * Only events in "active" grazing plans that the user can update, for
+   * assets the user can view, are included.
    *
-   * @return \Drupal\Core\StringTranslation\TranslatableMarkup[]
-   *   Returns the option labels, keyed by grazing event ID.
+   * @return \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface[][]
+   *   A list of grazing event lists. Each inner list is one asset's grazing
+   *   events in one plan, in plan order.
    */
-  protected function getGrazingEventOptions(): array {
-    $options = [];
+  protected function getGrazingEventLists(): array {
+    $event_lists = [];
 
     // Load all grazing plans with a status of "active".
     /** @var \Drupal\plan\Entity\PlanInterface[] $plans */
@@ -236,23 +235,44 @@ class GrazingEventComplete extends QuickFormBase {
           continue;
         }
 
-        // Iterate through grazing events.
-        foreach ($grazing_events as $grazing_event) {
+        $event_lists[] = $grazing_events;
+      }
+    }
 
-          // If the grazing event is not pending, skip it.
-          if ($grazing_event->getStatus() !== 'pending') {
-            continue;
-          }
+    return $event_lists;
+  }
 
-          // Build the option label, keeping the start value for sorting.
-          $options[$grazing_event->id()] = [
-            'start' => (int) $grazing_event->get('start')->value,
-            'label' => $grazing_event->label(),
-          ];
+  /**
+   * Get the options for the grazing event select element.
+   *
+   * Each asset's first pending grazing event is an option, keyed by the
+   * grazing event ID.
+   *
+   * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface[][] $event_lists
+   *   Grazing event lists from getGrazingEventLists().
+   *
+   * @return \Drupal\Core\StringTranslation\TranslatableMarkup[]
+   *   Returns the option labels, keyed by grazing event ID.
+   */
+  protected function getGrazingEventOptions(array $event_lists): array {
+    $options = [];
 
-          // Only include the first pending event.
-          break;
+    foreach ($event_lists as $grazing_events) {
+      foreach ($grazing_events as $grazing_event) {
+
+        // If the grazing event is not pending, skip it.
+        if ($grazing_event->getStatus() !== 'pending') {
+          continue;
         }
+
+        // Build the option label, keeping the start value for sorting.
+        $options[$grazing_event->id()] = [
+          'start' => (int) $grazing_event->get('start')->value,
+          'label' => $grazing_event->label(),
+        ];
+
+        // Only include the first pending event.
+        break;
       }
     }
 
@@ -352,9 +372,6 @@ class GrazingEventComplete extends QuickFormBase {
       ]));
     }
 
-    // Add the completed event to the user's recent completions.
-    $this->addNotification($grazing_event, $timestamp);
-
     // Tell the user that the grazing event was completed.
     $this->messenger()->addMessage($this->t('Completed grazing event: %label', ['%label' => $grazing_event->label()]));
 
@@ -437,72 +454,109 @@ class GrazingEventComplete extends QuickFormBase {
   }
 
   /**
-   * Build the "Recently completed" section for the current user.
+   * Build the notifications section: overdue and recently completed events.
+   *
+   * Both lists are read from the grazing plans themselves, so they include
+   * events completed before this form existed or outside of it.
+   *
+   * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface[][] $event_lists
+   *   Grazing event lists from getGrazingEventLists().
+   * @param array $options
+   *   The grazing event select options, keyed by grazing event ID.
    *
    * @return array
-   *   A details render element listing the user's recent completions.
+   *   A details render element.
    */
-  protected function buildNotifications(): array {
-    $notifications = $this->getNotificationStorage()->get((string) $this->currentUser->id(), []);
+  protected function buildNotifications(array $event_lists, array $options): array {
+    $now = $this->time->getCurrentTime();
+
+    // Sort the events into overdue (pending, past their planned start) and
+    // completed (done).
+    $overdue = [];
+    $completed = [];
+    foreach ($event_lists as $grazing_events) {
+      foreach ($grazing_events as $grazing_event) {
+        $status = $grazing_event->getStatus();
+        if ($status === 'pending' && (int) $grazing_event->get('start')->value < $now) {
+          $overdue[] = $grazing_event;
+        }
+        elseif ($status === 'done') {
+          $completed[] = $grazing_event;
+        }
+      }
+    }
+
+    // Most overdue first.
+    usort($overdue, function ($a, $b) {
+      return (int) $a->get('start')->value <=> (int) $b->get('start')->value;
+    });
+
+    // Most recently completed first, by the actual date on the movement log.
+    usort($completed, function ($a, $b) {
+      return (int) $b->getLog()->get('timestamp')->value <=> (int) $a->getLog()->get('timestamp')->value;
+    });
+    $completed = array_slice($completed, 0, static::COMPLETED_LIMIT);
 
     $element = [
       '#type' => 'details',
-      '#title' => $this->t('Recently completed (@count)', ['@count' => count($notifications)]),
-      '#description' => $this->t('The last @limit grazing events you completed with this form.', ['@limit' => static::NOTIFICATIONS_LIMIT]),
-      '#open' => FALSE,
+      '#title' => $this->formatPlural(count($overdue), 'Notifications (1 overdue)', 'Notifications (@count overdue)'),
+      // Open by default when something needs attention.
+      '#open' => !empty($overdue),
       '#weight' => -100,
     ];
 
-    if (empty($notifications)) {
-      $element['empty'] = ['#markup' => $this->t('You have not completed any grazing events yet.')];
-      return $element;
-    }
-
+    // Overdue grazing events. Events that can be completed now link to this
+    // form with the event preselected.
     $items = [];
-    foreach ($notifications as $notification) {
-      $items[] = $this->t('@label, completed @date', [
-        '@label' => $notification['label'],
-        '@date' => $this->dateFormatter->format($notification['timestamp'], 'short'),
+    foreach ($overdue as $grazing_event) {
+      $days = (int) floor(($now - (int) $grazing_event->get('start')->value) / 86400);
+      $text = $this->t('@label: @overdue', [
+        '@label' => $grazing_event->label(),
+        '@overdue' => $days > 0
+          ? $this->formatPlural($days, '1 day overdue', '@count days overdue')
+          : $this->t('due today'),
       ]);
+      if (isset($options[$grazing_event->id()])) {
+        $items[] = [
+          '#type' => 'link',
+          '#title' => $text,
+          '#url' => Url::fromRoute('<current>', [], ['query' => ['grazing_event' => $grazing_event->id()]]),
+        ];
+      }
+      else {
+        $items[] = $this->t('@text (complete the earlier event first)', ['@text' => $text]);
+      }
     }
-    $element['list'] = [
+    $element['overdue'] = [
       '#theme' => 'item_list',
+      '#title' => $this->t('Overdue'),
       '#items' => $items,
+      '#empty' => $this->t('No grazing events are overdue.'),
     ];
+
+    // Recently completed grazing events, linking to their movement logs.
+    $items = [];
+    foreach ($completed as $grazing_event) {
+      $log = $grazing_event->getLog();
+      $items[] = [
+        '#type' => 'link',
+        '#title' => $this->t('@asset to @location (@plan), completed @date', [
+          '@asset' => $grazing_event->getAsset()->label(),
+          '@location' => $grazing_event->getLocation()->label(),
+          '@plan' => $grazing_event->getPlan()->label(),
+          '@date' => $this->dateFormatter->format((int) $log->get('timestamp')->value, 'short'),
+        ]),
+        '#url' => $log->toUrl(),
+      ];
+    }
+    $element['completed'] = [
+      '#theme' => 'item_list',
+      '#title' => $this->t('Recently completed'),
+      '#items' => $items,
+      '#empty' => $this->t('No grazing events have been completed yet.'),
+    ];
+
     return $element;
-  }
-
-  /**
-   * Add a completed grazing event to the current user's recent completions.
-   *
-   * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface $grazing_event
-   *   The grazing event that was completed.
-   * @param int $timestamp
-   *   The actual date the event started.
-   */
-  protected function addNotification(GrazingEventInterface $grazing_event, int $timestamp): void {
-    $storage = $this->getNotificationStorage();
-    $uid = (string) $this->currentUser->id();
-
-    // Newest first, keeping only the most recent ones.
-    $notifications = $storage->get($uid, []);
-    array_unshift($notifications, [
-      'grazing_event' => (int) $grazing_event->id(),
-      'label' => (string) $grazing_event->label(),
-      'timestamp' => $timestamp,
-      'created' => $this->time->getRequestTime(),
-    ]);
-    $storage->set($uid, array_slice($notifications, 0, static::NOTIFICATIONS_LIMIT));
-  }
-
-  /**
-   * Get the key/value store for recent completions.
-   *
-   * @return \Drupal\Core\KeyValueStore\KeyValueStoreInterface
-   *   The key/value store, keyed by user ID.
-   */
-  protected function getNotificationStorage() {
-    return $this->keyValueFactory->get(static::NOTIFICATIONS_COLLECTION);
   }
 
 }
