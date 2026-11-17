@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Drupal\farm_grazing_plan\Plugin\QuickForm;
 
-use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
@@ -24,9 +23,10 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * Complete grazing event quick form.
  *
  * Marks a pending grazing event as done and records the actual date, notes,
- * and geometry on its movement log. Graze height and photos are recorded on
- * an observation log for the paddock the animals entered, and residual
- * height on an observation log for the paddock they left.
+ * and geometry on its movement log. Graze height and attachments (photos and
+ * documents, saved in the farm_attachments field) are recorded on an
+ * observation log for the paddock the animals entered, and residual height on
+ * an observation log for the paddock they left.
  */
 #[QuickForm(
   id: 'grazing_event_complete',
@@ -48,6 +48,16 @@ class GrazingEventComplete extends QuickFormBase {
    */
   public const HEIGHT_UNITS = 'in';
 
+  /**
+   * File types allowed by the farm_attachments field.
+   */
+  public const ATTACHMENT_EXTENSIONS = 'jpg jpeg png webp pdf docx';
+
+  /**
+   * Largest allowed attachment, matching the farm_attachments field (10 MB).
+   */
+  public const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
   public function __construct(
     array $configuration,
     $plugin_id,
@@ -56,7 +66,6 @@ class GrazingEventComplete extends QuickFormBase {
     AccountInterface $current_user,
     protected GrazingPlanInterface $grazingPlan,
     protected RequestStack $requestStack,
-    protected ConfigFactoryInterface $configFactory,
     protected AssetLocationInterface $assetLocation,
   ) {
     parent::__construct($configuration, $plugin_id, $plugin_definition, $entity_type_manager, $current_user);
@@ -113,18 +122,23 @@ class GrazingEventComplete extends QuickFormBase {
       '#step' => 0.1,
     ];
 
-    // Photos. Use the site's default download method, like farmOS file
-    // fields do.
-    $scheme = $this->configFactory->get('system.file')->get('default_scheme') ?: 'public';
-    $form['images'] = [
+    // Photos and documents. These are saved in the private "Attachments"
+    // field from the farm_attachments module, with the same folder, file
+    // types, and size limit as that field.
+    $form['attachments'] = [
       '#type' => 'managed_file',
-      '#title' => $this->t('Photos'),
-      '#description' => $this->t('Photos of the paddock the animals are entering. Allowed types: png, gif, jpg, jpeg, webp.'),
+      '#title' => $this->t('Photos and documents'),
+      '#description' => $this->t('Photos or documents about the paddock the animals are entering. Allowed types: @types. Up to 10 MB each.', [
+        '@types' => static::ATTACHMENT_EXTENSIONS,
+      ]),
       '#multiple' => TRUE,
-      '#upload_location' => $scheme . '://farm/log/' . date('Y-m'),
+      '#upload_location' => 'private://attachments/' . date('Y-m'),
       '#upload_validators' => [
         'FileExtension' => [
-          'extensions' => 'png gif jpg jpeg webp',
+          'extensions' => static::ATTACHMENT_EXTENSIONS,
+        ],
+        'FileSizeLimit' => [
+          'fileLimit' => static::ATTACHMENT_MAX_BYTES,
         ],
       ],
     ];
@@ -289,15 +303,15 @@ class GrazingEventComplete extends QuickFormBase {
     // Save the movement log.
     $log->save();
 
-    // Record graze height and photos on the paddock the animals entered.
-    $photos = array_values(array_map('intval', array_filter((array) $form_state->getValue('images'))));
+    // Record graze height and attachments on the paddock the animals entered.
+    $attachments = array_values(array_map('intval', array_filter((array) $form_state->getValue('attachments'))));
     $this->createPaddockObservation(
       $grazing_event->getLocation(),
       $grazing_event->getAsset(),
       $timestamp,
       $this->t('Graze height'),
       $form_state->getValue('graze_height'),
-      $photos,
+      $attachments,
     );
 
     // Record residual height on the paddock the animals left, if any.
@@ -338,14 +352,14 @@ class GrazingEventComplete extends QuickFormBase {
    *   The label for the height quantity.
    * @param mixed $height
    *   The submitted height, or an empty value.
-   * @param int[] $photos
-   *   Uploaded photo file IDs.
+   * @param int[] $attachments
+   *   Uploaded file IDs for the farm_attachments field.
    */
-  protected function createPaddockObservation(AssetInterface $paddock, AssetInterface $animals, int $timestamp, $height_label, $height, array $photos = []): void {
+  protected function createPaddockObservation(AssetInterface $paddock, AssetInterface $animals, int $timestamp, $height_label, $height, array $attachments = []): void {
 
-    // Skip if there is no height and no photo.
+    // Skip if there is no height and no attachment.
     $has_height = $height !== '' && $height !== NULL;
-    if (!$has_height && empty($photos)) {
+    if (!$has_height && empty($attachments)) {
       return;
     }
 
@@ -353,7 +367,7 @@ class GrazingEventComplete extends QuickFormBase {
     $values = [
       'type' => 'observation',
       'name' => $this->t('@label: @paddock', [
-        '@label' => $has_height ? $height_label : $this->t('Photos'),
+        '@label' => $has_height ? $height_label : $this->t('Attachments'),
         '@paddock' => $paddock->label(),
       ]),
       'timestamp' => $timestamp,
@@ -370,8 +384,8 @@ class GrazingEventComplete extends QuickFormBase {
         'label' => (string) $height_label,
       ];
     }
-    if (!empty($photos)) {
-      $values['image'] = $photos;
+    if (!empty($attachments)) {
+      $values['attachments'] = $attachments;
     }
 
     // Create the log. This also shows a message with a link to it.
