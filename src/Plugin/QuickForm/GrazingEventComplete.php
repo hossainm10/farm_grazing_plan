@@ -153,6 +153,13 @@ class GrazingEventComplete extends QuickFormBase {
       '#default_value' => $default_geometry,
     ];
 
+    // Remember the starting geometry, so that submitForm() can tell whether
+    // the user actually drew or edited anything.
+    $form['default_geometry'] = [
+      '#type' => 'value',
+      '#value' => $default_geometry,
+    ];
+
     return $form;
   }
 
@@ -270,9 +277,12 @@ class GrazingEventComplete extends QuickFormBase {
       ]);
     }
 
-    // Only overwrite geometry if one was drawn.
-    $geometry = $form_state->getValue('geometry');
-    if (!empty($geometry)) {
+    // Only save geometry if the user drew or edited one. The map starts with
+    // the preselected event's paddock, so an unchanged map is skipped. This
+    // also stops one paddock's shape being saved on another event when the
+    // user picks a different event in the dropdown.
+    $geometry = (string) $form_state->getValue('geometry');
+    if ($geometry !== '' && $geometry !== (string) $form_state->getValue('default_geometry')) {
       $log->set('geometry', $geometry);
     }
 
@@ -291,6 +301,7 @@ class GrazingEventComplete extends QuickFormBase {
     );
 
     // Record residual height on the paddock the animals left, if any.
+    $residual_height = $form_state->getValue('residual_height');
     $previous_paddock = $this->getPreviousPaddock($grazing_event);
     if ($previous_paddock) {
       $this->createPaddockObservation(
@@ -298,8 +309,13 @@ class GrazingEventComplete extends QuickFormBase {
         $grazing_event->getAsset(),
         $timestamp,
         $this->t('Residual height'),
-        $form_state->getValue('residual_height'),
+        $residual_height,
       );
+    }
+    elseif ($residual_height !== '' && $residual_height !== NULL) {
+      $this->messenger()->addWarning($this->t('The residual height was not saved, because this is the first grazing event for %asset in the plan.', [
+        '%asset' => $grazing_event->getAsset()->label(),
+      ]));
     }
 
     // Tell the user that the grazing event was completed.
@@ -333,11 +349,11 @@ class GrazingEventComplete extends QuickFormBase {
       return;
     }
 
-    // Build the log values.
+    // Build the log values. Name the log after what it records.
     $values = [
       'type' => 'observation',
       'name' => $this->t('@label: @paddock', [
-        '@label' => $height_label,
+        '@label' => $has_height ? $height_label : $this->t('Photos'),
         '@paddock' => $paddock->label(),
       ]),
       'timestamp' => $timestamp,
