@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notes fields to the "Complete grazing event" quick form. The date, notes,
   and geometry are saved on the event's movement log. Heights and photos are
   saved on observation logs for the paddocks the animals entered and left.
+- Add the 'farm_attachments' submodule, which adds a private "Attachments" field(photos and documents, up to 10 MB each) to assets and logs.
+
 
 ### Changed
 
-- The module now depends on `farm_observation`, `farm_quantity_standard`, and `farm_unit`.
+- The module now depends on `farm_attachments`, `farm_observation`, `farm_quantity_standard`, and `farm_unit`.
 
 ## [Unreleased]
 
