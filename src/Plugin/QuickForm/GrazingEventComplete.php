@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Drupal\farm_grazing_plan\Plugin\QuickForm;
 
+use Drupal\Component\Datetime\TimeInterface;
+use Drupal\Core\Datetime\DateFormatterInterface;
 use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\asset\Entity\AssetInterface;
@@ -26,7 +29,8 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * and geometry on its movement log. Graze height and attachments (photos and
  * documents, saved in the farm_attachments field) are recorded on an
  * observation log for the paddock the animals entered, and residual height on
- * an observation log for the paddock they left.
+ * an observation log for the paddock they left. The form also lists each
+ * user's most recently completed grazing events.
  */
 #[QuickForm(
   id: 'grazing_event_complete',
@@ -58,6 +62,16 @@ class GrazingEventComplete extends QuickFormBase {
    */
   public const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
+  /**
+   * The key/value collection that recent completions are stored in.
+   */
+  public const NOTIFICATIONS_COLLECTION = 'farm_grazing_plan_notifications';
+
+  /**
+   * How many recent completions to keep per user.
+   */
+  public const NOTIFICATIONS_LIMIT = 10;
+
   public function __construct(
     array $configuration,
     $plugin_id,
@@ -67,6 +81,9 @@ class GrazingEventComplete extends QuickFormBase {
     protected GrazingPlanInterface $grazingPlan,
     protected RequestStack $requestStack,
     protected AssetLocationInterface $assetLocation,
+    protected KeyValueFactoryInterface $keyValueFactory,
+    protected DateFormatterInterface $dateFormatter,
+    protected TimeInterface $time,
   ) {
     parent::__construct($configuration, $plugin_id, $plugin_definition, $entity_type_manager, $current_user);
   }
@@ -83,6 +100,9 @@ class GrazingEventComplete extends QuickFormBase {
     // long as it is one of the available options.
     $grazing_event_id = (int) $this->requestStack->getCurrentRequest()->query->get('grazing_event');
     $default = array_key_exists($grazing_event_id, $options) ? $grazing_event_id : NULL;
+
+    // Show the current user's recently completed grazing events.
+    $form['notifications'] = $this->buildNotifications();
 
     // Select the grazing event to complete.
     $form['grazing_event'] = [
@@ -332,6 +352,9 @@ class GrazingEventComplete extends QuickFormBase {
       ]));
     }
 
+    // Add the completed event to the user's recent completions.
+    $this->addNotification($grazing_event, $timestamp);
+
     // Tell the user that the grazing event was completed.
     $this->messenger()->addMessage($this->t('Completed grazing event: %label', ['%label' => $grazing_event->label()]));
 
@@ -411,6 +434,75 @@ class GrazingEventComplete extends QuickFormBase {
       $previous = $event;
     }
     return NULL;
+  }
+
+  /**
+   * Build the "Recently completed" section for the current user.
+   *
+   * @return array
+   *   A details render element listing the user's recent completions.
+   */
+  protected function buildNotifications(): array {
+    $notifications = $this->getNotificationStorage()->get((string) $this->currentUser->id(), []);
+
+    $element = [
+      '#type' => 'details',
+      '#title' => $this->t('Recently completed (@count)', ['@count' => count($notifications)]),
+      '#description' => $this->t('The last @limit grazing events you completed with this form.', ['@limit' => static::NOTIFICATIONS_LIMIT]),
+      '#open' => FALSE,
+      '#weight' => -100,
+    ];
+
+    if (empty($notifications)) {
+      $element['empty'] = ['#markup' => $this->t('You have not completed any grazing events yet.')];
+      return $element;
+    }
+
+    $items = [];
+    foreach ($notifications as $notification) {
+      $items[] = $this->t('@label, completed @date', [
+        '@label' => $notification['label'],
+        '@date' => $this->dateFormatter->format($notification['timestamp'], 'short'),
+      ]);
+    }
+    $element['list'] = [
+      '#theme' => 'item_list',
+      '#items' => $items,
+    ];
+    return $element;
+  }
+
+  /**
+   * Add a completed grazing event to the current user's recent completions.
+   *
+   * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface $grazing_event
+   *   The grazing event that was completed.
+   * @param int $timestamp
+   *   The actual date the event started.
+   */
+  protected function addNotification(GrazingEventInterface $grazing_event, int $timestamp): void {
+    $storage = $this->getNotificationStorage();
+    $uid = (string) $this->currentUser->id();
+
+    // Newest first, keeping only the most recent ones.
+    $notifications = $storage->get($uid, []);
+    array_unshift($notifications, [
+      'grazing_event' => (int) $grazing_event->id(),
+      'label' => (string) $grazing_event->label(),
+      'timestamp' => $timestamp,
+      'created' => $this->time->getRequestTime(),
+    ]);
+    $storage->set($uid, array_slice($notifications, 0, static::NOTIFICATIONS_LIMIT));
+  }
+
+  /**
+   * Get the key/value store for recent completions.
+   *
+   * @return \Drupal\Core\KeyValueStore\KeyValueStoreInterface
+   *   The key/value store, keyed by user ID.
+   */
+  protected function getNotificationStorage() {
+    return $this->keyValueFactory->get(static::NOTIFICATIONS_COLLECTION);
   }
 
 }
