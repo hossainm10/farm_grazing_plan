@@ -4,3 +4,6 @@ services:
   farm_grazing_plan:
     class: Drupal\farm_grazing_plan\GrazingPlan
   Drupal\farm_grazing_plan\GrazingPlanInterface: '@farm_grazing_plan'
+  farm_grazing_plan.event_writer:
+    class: Drupal\farm_grazing_plan\GrazingEventWriter
+  Drupal\farm_grazing_plan\GrazingEventWriterInterface: '@farm_grazing_plan.event_writer'
