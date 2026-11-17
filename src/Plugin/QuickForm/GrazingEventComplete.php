@@ -12,14 +12,12 @@ use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\Core\Url;
-use Drupal\asset\Entity\AssetInterface;
-use Drupal\farm_grazing_plan\Bundle\GrazingEventInterface;
+use Drupal\farm_grazing_plan\GrazingEventWriterInterface;
 use Drupal\farm_grazing_plan\GrazingPlanInterface;
 use Drupal\farm_location\AssetLocationInterface;
 use Drupal\farm_quick\Attribute\QuickForm;
 use Drupal\farm_quick\Plugin\QuickForm\QuickFormBase;
 use Drupal\farm_quick\Traits\QuickFormElementsTrait;
-use Drupal\farm_quick\Traits\QuickLogTrait;
 use Symfony\Component\HttpFoundation\RequestStack;
 
 /**
@@ -29,9 +27,12 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * and geometry on its movement log. Graze height and attachments (photos and
  * documents, saved in the farm_attachments field) are recorded on an
  * observation log for the paddock the animals entered, and residual height on
- * an observation log for the paddock they left. The form also shows
- * notifications: pending grazing events that are past their planned start
- * (overdue), and the most recently completed grazing events.
+ * an observation log for the paddock they left. Saving is done by the
+ * grazing event writer service (farm_grazing_plan.event_writer).
+ *
+ * The form also shows notifications: pending grazing events that are past
+ * their planned start (overdue), and the most recently completed grazing
+ * events.
  */
 #[QuickForm(
   id: 'grazing_event_complete',
@@ -46,7 +47,6 @@ use Symfony\Component\HttpFoundation\RequestStack;
 class GrazingEventComplete extends QuickFormBase {
 
   use QuickFormElementsTrait;
-  use QuickLogTrait;
 
   /**
    * The units that forage heights are recorded in.
@@ -77,6 +77,7 @@ class GrazingEventComplete extends QuickFormBase {
     protected GrazingPlanInterface $grazingPlan,
     protected RequestStack $requestStack,
     protected AssetLocationInterface $assetLocation,
+    protected GrazingEventWriterInterface $grazingEventWriter,
     protected DateFormatterInterface $dateFormatter,
     protected TimeInterface $time,
   ) {
@@ -317,19 +318,27 @@ class GrazingEventComplete extends QuickFormBase {
     $date = $form_state->getValue('timestamp');
     $timestamp = $date instanceof DrupalDateTime ? $date->getTimestamp() : time();
 
-    // Mark the movement log as done, on the actual date.
-    $log->set('status', 'done');
-    $log->set('timestamp', $timestamp);
-
-    // Append notes to any existing log notes, only if provided.
-    $notes = trim((string) $form_state->getValue('notes'));
-    if ($notes !== '') {
-      $existing = (string) $log->get('notes')->value;
-      $log->set('notes', [
-        'value' => $existing !== '' ? $existing . "\n\n" . $notes : $notes,
-        'format' => $log->get('notes')->format ?? 'default',
-      ]);
-    }
+    // Build the values for the grazing event writer. Graze height and
+    // attachments go on the paddock the animals entered ("next"), and
+    // residual height on the paddock they left ("previous").
+    $values = [
+      'timestamp' => $timestamp,
+      'notes' => (string) $form_state->getValue('notes'),
+      'quick_id' => $this->getQuickId(),
+      'observations' => [
+        'next' => [
+          'quantities' => [
+            $this->buildHeightQuantity($this->t('Graze height'), $form_state->getValue('graze_height')),
+          ],
+          'attachments' => array_values(array_map('intval', array_filter((array) $form_state->getValue('attachments')))),
+        ],
+        'previous' => [
+          'quantities' => [
+            $this->buildHeightQuantity($this->t('Residual height'), $form_state->getValue('residual_height')),
+          ],
+        ],
+      ],
+    ];
 
     // Only save geometry if the user drew or edited one. The map starts with
     // the preselected event's paddock, so an unchanged map is skipped. This
@@ -337,36 +346,17 @@ class GrazingEventComplete extends QuickFormBase {
     // user picks a different event in the dropdown.
     $geometry = (string) $form_state->getValue('geometry');
     if ($geometry !== '' && $geometry !== (string) $form_state->getValue('default_geometry')) {
-      $log->set('geometry', $geometry);
+      $values['geometry'] = $geometry;
     }
 
-    // Save the movement log.
-    $log->save();
+    // Complete the grazing event: mark the movement log done on the actual
+    // date, append notes, and create the paddock observation logs.
+    $this->grazingEventWriter->completeGrazingEvent($grazing_event, $values);
 
-    // Record graze height and attachments on the paddock the animals entered.
-    $attachments = array_values(array_map('intval', array_filter((array) $form_state->getValue('attachments'))));
-    $this->createPaddockObservation(
-      $grazing_event->getLocation(),
-      $grazing_event->getAsset(),
-      $timestamp,
-      $this->t('Graze height'),
-      $form_state->getValue('graze_height'),
-      $attachments,
-    );
-
-    // Record residual height on the paddock the animals left, if any.
+    // The residual height can only be saved if there is a paddock the animals
+    // left. Warn the user if they entered one for the asset's first event.
     $residual_height = $form_state->getValue('residual_height');
-    $previous_paddock = $this->getPreviousPaddock($grazing_event);
-    if ($previous_paddock) {
-      $this->createPaddockObservation(
-        $previous_paddock,
-        $grazing_event->getAsset(),
-        $timestamp,
-        $this->t('Residual height'),
-        $residual_height,
-      );
-    }
-    elseif ($residual_height !== '' && $residual_height !== NULL) {
+    if ($residual_height !== '' && $residual_height !== NULL && !$this->grazingEventWriter->getPreviousPaddock($grazing_event)) {
       $this->messenger()->addWarning($this->t('The residual height was not saved, because this is the first grazing event for %asset in the plan.', [
         '%asset' => $grazing_event->getAsset()->label(),
       ]));
@@ -380,77 +370,24 @@ class GrazingEventComplete extends QuickFormBase {
   }
 
   /**
-   * Create an observation log on a paddock, if there is anything to record.
+   * Build a forage height quantity for the grazing event writer.
    *
-   * @param \Drupal\asset\Entity\AssetInterface $paddock
-   *   The paddock.
-   * @param \Drupal\asset\Entity\AssetInterface $animals
-   *   The animal or group asset.
-   * @param int $timestamp
-   *   The observation timestamp.
-   * @param \Stringable|string $height_label
-   *   The label for the height quantity.
-   * @param mixed $height
-   *   The submitted height, or an empty value.
-   * @param int[] $attachments
-   *   Uploaded file IDs for the farm_attachments field.
+   * @param \Stringable|string $label
+   *   The quantity label.
+   * @param mixed $value
+   *   The submitted height, or an empty value. Empty heights are skipped by
+   *   the writer.
+   *
+   * @return array
+   *   The quantity values.
    */
-  protected function createPaddockObservation(AssetInterface $paddock, AssetInterface $animals, int $timestamp, $height_label, $height, array $attachments = []): void {
-
-    // Skip if there is no height and no attachment.
-    $has_height = $height !== '' && $height !== NULL;
-    if (!$has_height && empty($attachments)) {
-      return;
-    }
-
-    // Build the log values. Name the log after what it records.
-    $values = [
-      'type' => 'observation',
-      'name' => $this->t('@label: @paddock', [
-        '@label' => $has_height ? $height_label : $this->t('Attachments'),
-        '@paddock' => $paddock->label(),
-      ]),
-      'timestamp' => $timestamp,
-      'asset' => [$paddock, $animals],
-      'location' => [$paddock],
-      'status' => 'done',
+  protected function buildHeightQuantity($label, $value): array {
+    return [
+      'label' => (string) $label,
+      'value' => $value,
+      'units' => static::HEIGHT_UNITS,
+      'measure' => 'length',
     ];
-    if ($has_height) {
-      $values['quantity'][] = [
-        'type' => 'standard',
-        'measure' => 'length',
-        'value' => $height,
-        'units' => static::HEIGHT_UNITS,
-        'label' => (string) $height_label,
-      ];
-    }
-    if (!empty($attachments)) {
-      $values['attachments'] = $attachments;
-    }
-
-    // Create the log. This also shows a message with a link to it.
-    $this->createLog($values);
-  }
-
-  /**
-   * Get the paddock of the grazing event before this one, for the same asset.
-   *
-   * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface $grazing_event
-   *   The grazing event.
-   *
-   * @return \Drupal\asset\Entity\AssetInterface|null
-   *   The previous paddock, or NULL if this is the asset's first event.
-   */
-  protected function getPreviousPaddock(GrazingEventInterface $grazing_event): ?AssetInterface {
-    $events = $this->grazingPlan->getGrazingEventsByAsset($grazing_event->getPlan());
-    $previous = NULL;
-    foreach ($events[$grazing_event->getAsset()->id()] ?? [] as $event) {
-      if ((int) $event->id() === (int) $grazing_event->id()) {
-        return $previous ? $previous->getLocation() : NULL;
-      }
-      $previous = $event;
-    }
-    return NULL;
   }
 
   /**

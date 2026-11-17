@@ -21,14 +21,14 @@ use Drupal\plan\Entity\PlanInterface;
  * @code
  * $values['observations'] = [
  *   'previous' => [
- *     'photos' => [1, 2], // file IDs from managed_file
+ *     'attachments' => [1, 2], // file IDs from managed_file
  *     'quantities' => [
  *       ['label' => 'Residual left', 'value' => '4', 'units' => 'cm', 'measure' => 'length'],
  *     ],
  *     'notes' => ['value' => '...', 'format' => 'default'],
  *   ],
  *   'next' => [
- *     'photos' => [],
+ *     'attachments' => [],
  *     'quantities' => [
  *       ['label' => 'Graze height', 'value' => '12', 'units' => 'cm', 'measure' => 'length'],
  *     ],
@@ -36,6 +36,10 @@ use Drupal\plan\Entity\PlanInterface;
  *   ],
  * ];
  * @endcode
+ *
+ * Attachments (photos and documents) are saved in the private "attachments"
+ * field from the farm_attachments submodule. The legacy key 'photos' is still
+ * accepted as an alias for 'attachments'.
  */
 interface GrazingEventWriterInterface {
 
@@ -44,14 +48,18 @@ interface GrazingEventWriterInterface {
    *
    * Persists: status=done, actual timestamp, notes, geometry on the movement
    * log (not the plan record planned start), plus optional previous/next
-   * paddock observation logs with photos and quantities.
+   * paddock observation logs with attachments and quantities. Notes are
+   * appended to any notes already on the movement log.
+   *
+   * The caller is responsible for checking that the event is pending and
+   * that the user has access to update it.
    *
    * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface $grazing_event
    *   The pending grazing event.
    * @param array $values
    *   Supported keys:
    *   - timestamp (int): actual date/time
-   *   - notes: log notes value
+   *   - notes: log notes, as a string or a ['value', 'format'] array
    *   - geometry: WKT/geometry string for the movement log
    *   - observations: previous/next observation payloads (see class docs)
    *   - quick_id (string): optional quick form id for created observations
@@ -66,7 +74,7 @@ interface GrazingEventWriterInterface {
    *
    * Persists: done movement log, grazing event plan record after the last
    * event for the asset, plus optional previous/next paddock observation
-   * logs with photos and quantities.
+   * logs with attachments and quantities.
    *
    * @param \Drupal\plan\Entity\PlanInterface $plan
    *   The grazing plan.
@@ -85,5 +93,17 @@ interface GrazingEventWriterInterface {
    *   The created grazing event, or NULL on failure.
    */
   public function createGrazingEvent(PlanInterface $plan, AssetInterface $asset, AssetInterface $location, array $values = []): ?GrazingEventInterface;
+
+  /**
+   * Get the paddock of the grazing event before this one, for the same asset.
+   *
+   * @param \Drupal\farm_grazing_plan\Bundle\GrazingEventInterface $grazing_event
+   *   The grazing event.
+   *
+   * @return \Drupal\asset\Entity\AssetInterface|null
+   *   The previous paddock, or NULL if this is the asset's first event in the
+   *   plan.
+   */
+  public function getPreviousPaddock(GrazingEventInterface $grazing_event): ?AssetInterface;
 
 }

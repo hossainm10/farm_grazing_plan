@@ -16,7 +16,7 @@ use Drupal\plan\Entity\PlanInterface;
 use Drupal\plan\Entity\PlanRecord;
 
 /**
- * Persists grazing event logs, plan records, photos, and quantities.
+ * Persists grazing event logs, plan records, attachments, and quantities.
  */
 class GrazingEventWriter implements GrazingEventWriterInterface {
 
@@ -37,9 +37,17 @@ class GrazingEventWriter implements GrazingEventWriterInterface {
 
     $log->set('status', 'done');
     $log->set('timestamp', $timestamp);
-    if (array_key_exists('notes', $values)) {
-      $log->set('notes', $values['notes']);
+
+    // Append new notes to any notes already on the log.
+    $notes = $this->normalizeNotes($values['notes'] ?? NULL);
+    if ($notes !== NULL) {
+      $existing = (string) $log->get('notes')->value;
+      $log->set('notes', [
+        'value' => $existing !== '' ? $existing . "\n\n" . $notes['value'] : $notes['value'],
+        'format' => $log->get('notes')->format ?? $notes['format'],
+      ]);
     }
+
     if (array_key_exists('geometry', $values)) {
       $log->set('geometry', $values['geometry']);
     }
@@ -156,24 +164,36 @@ class GrazingEventWriter implements GrazingEventWriterInterface {
   }
 
   /**
+   * {@inheritdoc}
+   */
+  public function getPreviousPaddock(GrazingEventInterface $grazing_event): ?AssetInterface {
+    $events = array_values($this->grazingPlan->getGrazingEventsByAsset($grazing_event->getPlan())[$grazing_event->getAsset()->id()] ?? []);
+    foreach ($events as $index => $event) {
+      if ((int) $event->id() === (int) $grazing_event->id()) {
+        return $index > 0 ? $events[$index - 1]->getLocation() : NULL;
+      }
+    }
+    return NULL;
+  }
+
+  /**
    * Resolve previous and next paddock assets.
    */
   protected function getAdjacentPaddocks(PlanInterface $plan, AssetInterface $asset, AssetInterface $next_paddock, ?GrazingEventInterface $grazing_event = NULL): array {
     $previous = NULL;
-    $events = array_values($this->grazingPlan->getGrazingEventsByAsset($plan)[$asset->id()] ?? []);
 
+    // With a grazing event (completed or just created), the previous paddock
+    // is the paddock of the event before it in the plan.
     if ($grazing_event) {
-      foreach ($events as $index => $event) {
-        if ((int) $event->id() === (int) $grazing_event->id()) {
-          if ($index > 0) {
-            $previous = $events[$index - 1]->getLocation();
-          }
-          break;
-        }
-      }
+      $previous = $this->getPreviousPaddock($grazing_event);
     }
-    elseif (!empty($events)) {
-      $previous = end($events)->getLocation();
+
+    // Without one, it is the paddock of the asset's last event.
+    else {
+      $events = array_values($this->grazingPlan->getGrazingEventsByAsset($plan)[$asset->id()] ?? []);
+      if (!empty($events)) {
+        $previous = end($events)->getLocation();
+      }
     }
 
     return [
@@ -200,10 +220,10 @@ class GrazingEventWriter implements GrazingEventWriterInterface {
       ], 'observation');
     }
 
-    $images = $this->prepareUploadedImages($values['photos'] ?? []);
+    $attachments = $this->prepareAttachments($values['attachments'] ?? $values['photos'] ?? []);
     $notes = $values['notes'] ?? NULL;
     $has_notes = is_array($notes) ? !empty($notes['value']) : !empty($notes);
-    if (empty($quantity_entities) && empty($images) && !$has_notes) {
+    if (empty($quantity_entities) && empty($attachments) && !$has_notes) {
       return;
     }
 
@@ -219,8 +239,10 @@ class GrazingEventWriter implements GrazingEventWriterInterface {
       'location' => [$paddock],
       'status' => 'done',
       'quantity' => $quantity_entities,
-      'image' => $images,
     ]);
+    if (!empty($attachments)) {
+      $log->set('attachments', $attachments);
+    }
     if ($has_notes) {
       $log->set('notes', $notes);
     }
@@ -231,20 +253,47 @@ class GrazingEventWriter implements GrazingEventWriterInterface {
   }
 
   /**
-   * Make uploaded image files permanent and return file IDs.
+   * Make uploaded attachment files permanent and return their file IDs.
+   *
+   * @param array $fids
+   *   File IDs from a managed_file element.
+   *
+   * @return int[]
+   *   The IDs of the files that exist.
    */
-  protected function prepareUploadedImages(array $fids): array {
-    $images = [];
-    foreach ($fids as $fid) {
+  protected function prepareAttachments(array $fids): array {
+    $attachments = [];
+    foreach (array_filter($fids) as $fid) {
       $file = $this->entityTypeManager->getStorage('file')->load($fid);
       if (!$file instanceof FileInterface) {
         continue;
       }
       $file->setPermanent();
       $file->save();
-      $images[] = (int) $file->id();
+      $attachments[] = (int) $file->id();
     }
-    return $images;
+    return $attachments;
+  }
+
+  /**
+   * Normalize notes to a ['value', 'format'] array, or NULL if empty.
+   *
+   * @param mixed $notes
+   *   Notes as a string, a ['value', 'format'] array, or NULL.
+   *
+   * @return array|null
+   *   The notes, or NULL if there are none.
+   */
+  protected function normalizeNotes($notes): ?array {
+    if (is_array($notes)) {
+      $value = trim((string) ($notes['value'] ?? ''));
+      $format = $notes['format'] ?? 'default';
+    }
+    else {
+      $value = trim((string) $notes);
+      $format = 'default';
+    }
+    return $value === '' ? NULL : ['value' => $value, 'format' => $format];
   }
 
 }
