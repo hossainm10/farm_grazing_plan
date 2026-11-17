@@ -1,0 +1,56 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Implements hook_install().
+ */
+function farm_attachments_install(): void {
+  farm_attachments_configure_displays();
+}
+
+/**
+ * Adds attachment widgets and formatters to existing record displays.
+ */
+function farm_attachments_configure_displays(): void {
+  $entity_type_manager = \Drupal::entityTypeManager();
+  $bundle_info = \Drupal::service('entity_type.bundle.info');
+  $form_displays = $entity_type_manager->getStorage('entity_form_display');
+  $view_displays = $entity_type_manager->getStorage('entity_view_display');
+
+  foreach (['asset', 'log'] as $entity_type_id) {
+    foreach (array_keys($bundle_info->getBundleInfo($entity_type_id)) as $bundle) {
+      $form_display_ids = $form_displays->getQuery()
+        ->accessCheck(FALSE)
+        ->condition('targetEntityType', $entity_type_id)
+        ->condition('bundle', $bundle)
+        ->execute();
+      foreach ($form_displays->loadMultiple($form_display_ids) as $form_display) {
+        $form_display->setComponent('attachments', [
+          'type' => 'file_generic',
+          'weight' => 90,
+        ])->save();
+      }
+
+      $view_display_ids = $view_displays->getQuery()
+        ->accessCheck(FALSE)
+        ->condition('targetEntityType', $entity_type_id)
+        ->condition('bundle', $bundle)
+        ->execute();
+      foreach ($view_displays->loadMultiple($view_display_ids) as $view_display) {
+        $view_display->setComponent('attachments', [
+          'type' => 'farm_attachment',
+          'label' => 'above',
+          'weight' => 90,
+        ])->save();
+      }
+    }
+  }
+}
+
+/**
+ * Adds attachment widgets and formatters to existing record displays.
+ */
+function farm_attachments_update_10002(): void {
+  farm_attachments_configure_displays();
+}

@@ -1,0 +1,9 @@
+{
+  "name": "drupal/farm_attachments",
+  "description": "Private photo and document attachments for farmOS assets and logs.",
+  "type": "drupal-module",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "farmos/farmos": "^4"
+  }
+}

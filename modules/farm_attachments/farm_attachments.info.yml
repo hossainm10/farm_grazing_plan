@@ -1,0 +1,10 @@
+name: farmOS Attachments
+description: Provides private photo and document attachments for farmOS assets and logs.
+type: module
+package: farmOS Contrib
+core_version_requirement: ^11
+dependencies:
+  - farm:farm_entity
+  - farm:farm_field
+  - drupal:file
+  - drupal:image
